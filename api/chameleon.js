@@ -1,57 +1,106 @@
-// Dark Empire Chameleon (Girgit) Dual-Face Image & Hosting API
-// Power by Dark Empire | Owner: Sardar Daud Arain
+// ============================================================================
+// DARK EMPIRE CHAMELEON (GIRGIT) DUAL-FACE IMAGE ENGINE — v3.0 PRO
+// Power by: Dark Empire | Owner: Sardar Daud Arain
+// Engine: Sharp C++ Native Pipeline + Multi-Fallback PNG Hosting
+// ============================================================================
 
 import sharp from 'sharp';
 
-const BRANDING = {
+const BRANDING = Object.freeze({
   power_by: 'Dark Empire',
-  owner: 'Sardar Daud Arain'
-};
+  owner: 'Sardar Daud Arain',
+  version: '3.0-PRO'
+});
 
-// Base64 string ko clean Buffer mein convert karna
-function decodeBase64Image(input) {
+const MAX_INPUT_BYTES = 4 * 1024 * 1024; // 4 MB safety cap per image
+
+// Strict Base64 to Buffer decoder with size validation
+function decodeBase64Image(input, fieldName = 'image') {
   if (!input || typeof input !== 'string') {
-    throw new Error('Invalid image_base64 input.');
+    throw new Error(`${fieldName} missing ya invalid hai.`);
   }
-  const clean = input.includes(',') ? input.split(',')[1] : input;
-  return Buffer.from(clean, 'base64');
+  const clean = input.includes(',') ? input.split(',')[1].trim() : input.trim();
+  const buf = Buffer.from(clean, 'base64');
+
+  if (!buf.length) {
+    throw new Error(`${fieldName} empty hai.`);
+  }
+  if (buf.length > MAX_INPUT_BYTES) {
+    throw new Error(`${fieldName} 4MB se bari hai. Chhoti image use karein.`);
+  }
+  return buf;
 }
 
-// Catbox.moe par direct PNG host karna (Bina compression ke)
-async function uploadToCatbox(pngBuffer, filename = 'dark-empire-chameleon.png') {
-  const form = new FormData();
-  form.append('reqtype', 'fileupload');
-  const blob = new Blob([pngBuffer], { type: 'image/png' });
-  form.append('fileToUpload', blob, filename);
+// Ultra-Fast Hosting with 8s Anti-Hang Timeout & Automatic Fallback
+async function uploadPngReliable(pngBuffer, filename = 'dark-empire-chameleon.png') {
+  // Tier 1: FreeImage.host (Permanent Direct PNG)
+  try {
+    const form = new FormData();
+    form.append('key', '6d207e02198a847aa98d0a2a901485a5');
+    form.append('action', 'upload');
+    form.append('source', pngBuffer.toString('base64'));
+    form.append('format', 'json');
 
-  const response = await fetch('https://catbox.moe/user/api.php', {
-    method: 'POST',
-    body: form
-  });
+    const res = await fetch('https://freeimage.host/api/1/upload', {
+      method: 'POST',
+      body: form,
+      signal: AbortSignal.timeout(8000)
+    });
 
-  if (!response.ok) {
-    throw new Error('Hosting server busy hai, dobara try karein.');
+    if (res.ok) {
+      const json = await res.json();
+      if (json?.image?.url) {
+        return { url: json.image.url, host: 'freeimage.host' };
+      }
+    }
+  } catch (_) {
+    // Silent fallback to Tier 2
   }
 
-  const url = (await response.text()).trim();
-  if (!url.startsWith('http')) {
-    throw new Error('Upload failed: ' + url);
+  // Tier 2: TmpFiles.org (Direct Uncompressed PNG)
+  try {
+    const form2 = new FormData();
+    const blob = new Blob([pngBuffer], { type: 'image/png' });
+    form2.append('file', blob, filename);
+
+    const res2 = await fetch('https://tmpfiles.org/api/v1/upload', {
+      method: 'POST',
+      body: form2,
+      signal: AbortSignal.timeout(8000)
+    });
+
+    if (res2.ok) {
+      const json2 = await res2.json();
+      if (json2?.data?.url) {
+        const directUrl = json2.data.url.replace('tmpfiles.org/', 'tmpfiles.org/dl/');
+        return { url: directUrl, host: 'tmpfiles.org' };
+      }
+    }
+  } catch (_) {
+    // All tiers exhausted
   }
-  return url;
+
+  throw new Error('Hosting servers abhi busy hain. Thori dair baad dobara try karein.');
 }
 
-// Core Chameleon (Mirage Tank) Pixel Math Engine
-async function generateChameleonPng(lightBuf, darkBuf, size = 512) {
-  // Dono images ko fast C++ engine se parallel resize + grayscale karna
+// Core High-Precision Chameleon (Mirage Tank) Pixel Engine
+async function generateChameleonPng(lightBuf, darkBuf, size = 512, contrast = 'high') {
+  // Parallel C++ processing: Auto-rotate, Resize, Greyscale, Normalize, Sharpen
   const [lightRaw, darkRaw] = await Promise.all([
     sharp(lightBuf)
-      .resize(size, size, { fit: 'cover', position: 'center' })
+      .rotate() // EXIF auto-orient (mobile photos seedhi rahengi)
+      .resize(size, size, { fit: 'cover', position: 'centre', kernel: sharp.kernel.lanczos3 })
       .greyscale()
+      .normalize()
+      .sharpen({ sigma: 1.2 })
       .raw()
       .toBuffer(),
     sharp(darkBuf)
-      .resize(size, size, { fit: 'cover', position: 'center' })
+      .rotate()
+      .resize(size, size, { fit: 'cover', position: 'centre', kernel: sharp.kernel.lanczos3 })
       .greyscale()
+      .normalize()
+      .sharpen({ sigma: 1.2 })
       .raw()
       .toBuffer()
   ]);
@@ -59,38 +108,44 @@ async function generateChameleonPng(lightBuf, darkBuf, size = 512) {
   const totalPixels = size * size;
   const outputRgba = Buffer.allocUnsafe(totalPixels * 4);
 
-  for (let i = 0; i < totalPixels; i++) {
-    // Light Mode image ko bright range (128 - 255) mein map karna
-    const a = 128 + ((lightRaw[i] * 127) / 255);
-    // Dark Mode image ko dark range (0 - 127) mein map karna
-    const b = (darkRaw[i] * 127) / 255;
+  // Strict luminance separation (High contrast = less ghosting)
+  const lightFloor = contrast === 'high' ? 145 : 130;
+  const lightRange = 255 - lightFloor;
+  const darkCeiling = contrast === 'high' ? 110 : 125;
 
-    // Transparency (Alpha) aur Final Gray Color calculate karna
+  for (let i = 0; i < totalPixels; i++) {
+    // Map Light image to upper bright band [lightFloor .. 255]
+    const a = lightFloor + ((lightRaw[i] * lightRange) / 255);
+    // Map Dark image to lower dark band [0 .. darkCeiling]
+    const b = (darkRaw[i] * darkCeiling) / 255;
+
+    // Exact Mirage Tank Alpha & Color equations:
+    // White BG (255): out = gray * (alpha/255) + 255 * (1 - alpha/255) = a
+    // Black BG (0):   out = gray * (alpha/255) = b
     let alpha = Math.round(255 - a + b);
     if (alpha < 1) alpha = 1;
-    if (alpha > 255) alpha = 255;
+    else if (alpha > 255) alpha = 255;
 
     let gray = Math.round((b * 255) / alpha);
     if (gray < 0) gray = 0;
-    if (gray > 255) gray = 255;
+    else if (gray > 255) gray = 255;
 
     const idx = i * 4;
-    outputRgba[idx]     = gray;  // R
-    outputRgba[idx + 1] = gray;  // G
-    outputRgba[idx + 2] = gray;  // B
-    outputRgba[idx + 3] = alpha; // A (Transparency)
+    outputRgba[idx]     = gray;
+    outputRgba[idx + 1] = gray;
+    outputRgba[idx + 2] = gray;
+    outputRgba[idx + 3] = alpha;
   }
 
-  // Fast PNG encoding
   return sharp(outputRgba, {
     raw: { width: size, height: size, channels: 4 }
   })
-    .png({ compressionLevel: 6 })
+    .png({ compressionLevel: 6, adaptiveFiltering: true })
     .toBuffer();
 }
 
 export default async function handler(req, res) {
-  // CORS Headers
+  // Global CORS Headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -99,14 +154,19 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  // GET Request: API Status & Documentation
+  // Health Check & API Info
   if (req.method === 'GET') {
     return res.status(200).json({
       status: true,
       api_name: 'Dark Empire Chameleon Dual-Face Image API',
-      speed: 'Ultra-Fast (Sharp C++ Engine)',
+      engine: 'Sharp C++ Native (Lanczos3 + Sharpen + EXIF Auto-Rotate)',
+      modes: {
+        sticker: '512x512',
+        hd: '800x800',
+        ultra: '1024x1024'
+      },
       actions: {
-        generate: 'POST { action: "generate", light_image, dark_image, mode: "sticker" | "hd", auto_upload: false }',
+        generate: 'POST { action: "generate", light_image, dark_image, mode: "sticker"|"hd"|"ultra", contrast: "high"|"normal", auto_upload: false }',
         upload: 'POST { action: "upload", image_base64 }'
       },
       branding: BRANDING
@@ -122,36 +182,43 @@ export default async function handler(req, res) {
   }
 
   try {
-    const body = req.body || {};
-    const action = (body.action || 'generate').toLowerCase().trim();
+    // Safe body parsing (handles both parsed JSON and raw string)
+    let body = req.body;
+    if (typeof body === 'string') {
+      try { body = JSON.parse(body); } catch { body = {}; }
+    }
+    body = body || {};
 
-    // 1. GENERATE CHAMELEON IMAGE
+    const action = String(body.action || 'generate').toLowerCase().trim();
+
+    // ACTION 1: GENERATE CHAMELEON PNG
     if (action === 'generate') {
-      const { light_image, dark_image, mode = 'sticker', auto_upload = false } = body;
+      const {
+        light_image,
+        dark_image,
+        mode = 'sticker',
+        contrast = 'high',
+        auto_upload = false
+      } = body;
 
-      if (!light_image || !dark_image) {
-        return res.status(400).json({
-          status: false,
-          error: 'light_image aur dark_image dono (Base64) required hain.',
-          branding: BRANDING
-        });
-      }
-
-      // Sticker = 512x512 (WhatsApp Ready), HD = 720x720 (Fast & Sharp)
-      const size = mode === 'hd' ? 720 : 512;
+      const sizeMap = { sticker: 512, hd: 800, ultra: 1024 };
+      const size = sizeMap[mode] || 512;
 
       const startTime = Date.now();
-      const lightBuf = decodeBase64Image(light_image);
-      const darkBuf = decodeBase64Image(dark_image);
+      const lightBuf = decodeBase64Image(light_image, 'light_image');
+      const darkBuf = decodeBase64Image(dark_image, 'dark_image');
 
-      const pngBuffer = await generateChameleonPng(lightBuf, darkBuf, size);
+      const pngBuffer = await generateChameleonPng(lightBuf, darkBuf, size, contrast);
       const base64Result = 'data:image/png;base64,' + pngBuffer.toString('base64');
 
       let hostedUrl = null;
+      let hostProvider = null;
       let embedCode = null;
 
       if (auto_upload) {
-        hostedUrl = await uploadToCatbox(pngBuffer);
+        const uploaded = await uploadPngReliable(pngBuffer);
+        hostedUrl = uploaded.url;
+        hostProvider = uploaded.host;
         embedCode = `<img src="${hostedUrl}" alt="Dark Empire Chameleon" />`;
       }
 
@@ -159,48 +226,46 @@ export default async function handler(req, res) {
         status: true,
         action: 'generate',
         mode,
+        contrast,
         resolution: `${size}x${size}`,
+        size_kb: Math.round(pngBuffer.length / 1024),
         process_time_ms: Date.now() - startTime,
         image_base64: base64Result,
         hosted_url: hostedUrl,
+        host_provider: hostProvider,
         embed_code: embedCode,
         branding: BRANDING
       });
     }
 
-    // 2. DIRECT IMAGE-TO-LINK UPLOAD
+    // ACTION 2: DIRECT IMAGE-TO-LINK HOSTING
     if (action === 'upload') {
-      const { image_base64 } = body;
-      if (!image_base64) {
-        return res.status(400).json({
-          status: false,
-          error: 'image_base64 required hai.',
-          branding: BRANDING
-        });
-      }
-
-      const pngBuffer = decodeBase64Image(image_base64);
-      const hostedUrl = await uploadToCatbox(pngBuffer);
+      const pngBuffer = decodeBase64Image(body.image_base64, 'image_base64');
+      const startTime = Date.now();
+      const uploaded = await uploadPngReliable(pngBuffer);
 
       return res.status(200).json({
         status: true,
         action: 'upload',
-        hosted_url: hostedUrl,
-        embed_code: `<img src="${hostedUrl}" alt="Dark Empire Chameleon" />`,
+        host_provider: uploaded.host,
+        size_kb: Math.round(pngBuffer.length / 1024),
+        upload_time_ms: Date.now() - startTime,
+        hosted_url: uploaded.url,
+        embed_code: `<img src="${uploaded.url}" alt="Dark Empire Chameleon" />`,
         branding: BRANDING
       });
     }
 
     return res.status(400).json({
       status: false,
-      error: 'Invalid action. "generate" ya "upload" use karein.',
+      error: 'Invalid action. Sirf "generate" ya "upload" use karein.',
       branding: BRANDING
     });
 
   } catch (err) {
     return res.status(500).json({
       status: false,
-      error: 'Server Error: ' + err.message,
+      error: err.message || 'Internal Server Error',
       branding: BRANDING
     });
   }
